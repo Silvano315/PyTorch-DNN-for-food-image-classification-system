@@ -1,4 +1,4 @@
-# PyTorch-DNN-for-food-image-classification-system
+# PyTorch-CNN-for-food-image-classification-system
 
 ## Table of Contents
 
