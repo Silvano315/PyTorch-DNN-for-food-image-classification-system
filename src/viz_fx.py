@@ -7,6 +7,8 @@ from PIL import Image
 from collections import Counter
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import torch
+import torchvision
 
 
 def display_random_images(image_paths: List[str], n: int = 25) -> Tuple[plt.Figure, plt.Axes]:
@@ -229,3 +231,92 @@ def analyze_color_distribution(image_paths: List[str], n_samples: int = 1000) ->
     fig.update_yaxes(title_text="Frequencies")
     
     return fig
+
+
+def visualize_random_images(dataset: torchvision.datasets.ImageFolder, num_images: int = 25, axis: bool = False) -> None:
+    """
+    Visualize a specified number of random images from an ImageFolder dataset.
+
+    Args:
+        dataset (torchvision.datasets.ImageFolder): The dataset to visualize images from.
+        num_images (int): Number of random images to display. Default is 25.
+        axis (bool): if True axis would be shown. Dafault is False
+
+    Returns:
+        None: This function displays the plot directly.
+
+    Example:
+        visualize_random_images(trainset, num_images=25)
+    """
+    grid_size = int(num_images ** 0.5)
+    if grid_size ** 2 < num_images:
+        grid_size += 1
+
+    fig, axes = plt.subplots(grid_size, grid_size, figsize=(15, 15))
+    fig.suptitle(f"Random Images from {dataset.root.split('//')[1].capitalize()} Dataset", fontsize=16, y = 1.01)
+    axes = axes.flatten()
+    indices = random.sample(range(len(dataset)), num_images)
+    for i, idx in enumerate(indices):
+        img, label = dataset[idx]        
+        if isinstance(img, torch.Tensor):
+            img = img.numpy().transpose((1, 2, 0))
+        mean = dataset.transform.transforms.transforms[-2].mean
+        std = dataset.transform.transforms.transforms[-2].std
+        img = std * img + mean
+        img = np.clip(img, 0, 1)
+
+        axes[i].imshow(img)
+        if axis == False:
+            axes[i].axis('off')
+        axes[i].set_title(f"Class: {dataset.classes[label]}")
+
+    for i in range(num_images, len(axes)):
+        fig.delaxes(axes[i])
+    plt.tight_layout()
+    plt.show()
+
+
+def visualize_augmented_images(dataset: torchvision.datasets.ImageFolder, num_images: int = 5) -> None:
+    """
+    Visualize a specified number of random images from an ImageFolder dataset,
+    showing both the original and augmented versions side by side.
+
+    Args:
+        dataset (torchvision.datasets.ImageFolder): The dataset to visualize images from.
+        num_images (int): Number of random images to display. Default is 5.
+
+    Returns:
+        None: This function displays the plot directly.
+
+    Example:
+        visualize_augmented_images(trainset_aug, num_images=5)
+    """
+    fig, axes = plt.subplots(num_images, 2, figsize=(10, 4*num_images))
+    fig.suptitle("Original vs Augmented Images", fontsize=16, y = 1.0)
+
+    indices = random.sample(range(len(dataset)), num_images)
+    normalize_transform = None
+    for transform in dataset.transform.transforms.transforms:
+        if isinstance(transform, torchvision.transforms.Normalize):
+            normalize_transform = transform
+            break
+    for i, idx in enumerate(indices):
+        img_path, label = dataset.samples[idx]
+        original_img = Image.open(img_path).convert('RGB')
+        augmented_img, _ = dataset[idx]
+        if isinstance(augmented_img, torch.Tensor):
+            augmented_img = augmented_img.numpy().transpose((1, 2, 0))
+        if normalize_transform:
+            mean = np.array(normalize_transform.mean)
+            std = np.array(normalize_transform.std)
+            augmented_img = std * augmented_img + mean
+        augmented_img = np.clip(augmented_img, 0, 1)
+        axes[i, 0].imshow(original_img)
+        axes[i, 0].axis('off')
+        axes[i, 0].set_title(f"Original - Class: {dataset.classes[label]}")
+        axes[i, 1].imshow(augmented_img)
+        axes[i, 1].axis('off')
+        axes[i, 1].set_title("Augmented")
+
+    plt.tight_layout()
+    plt.show()
