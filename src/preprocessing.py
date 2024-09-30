@@ -1,8 +1,11 @@
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 import numpy as np
+import torch
 import torchvision
-from typing import Tuple
+from torch.utils.data import DataLoader
+from torchvision.datasets import ImageFolder
+from typing import Tuple, Dict
 
 class Transforms:
     def __init__(self, transforms: A.Compose):
@@ -88,3 +91,48 @@ def create_datasets(data_dir: str, augment_train: bool = False):
     testset = torchvision.datasets.ImageFolder(root=f'{data_dir}/test', transform=val_transform)
 
     return trainset, valset, testset
+
+
+def create_data_loaders(
+    datasets: Dict[str, ImageFolder],
+    batch_size: int,
+    num_workers: int = 4
+) -> Dict[str, DataLoader]:
+    """
+    Create DataLoader objects for train, validation, and test datasets.
+
+    Args:
+        datasets (Dict[str, ImageFolder]): A dictionary containing the datasets.
+            Expected keys are 'train', 'val', and 'test'.
+        batch_size (int): The batch size to use for the DataLoaders.
+        num_workers (int, optional): Number of subprocesses to use for data loading.
+            0 means that the data will be loaded in the main process. Default is 4.
+
+    Returns:
+        Dict[str, DataLoader]: A dictionary containing the DataLoader objects.
+            Keys are 'train', 'val', and 'test'.
+
+    Example:
+        datasets = {
+            'train': trainset,
+            'val': valset,
+            'test': testset
+        }
+        dataloaders = create_data_loaders(datasets, batch_size=32)
+        train_loader = dataloaders['train']
+        val_loader = dataloaders['val']
+        test_loader = dataloaders['test']
+    """
+    dataloaders = {}
+
+    for split, dataset in datasets.items():
+        shuffle = split == 'train' 
+        dataloaders[split] = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            num_workers=num_workers,
+            pin_memory=torch.cuda.is_available()
+        )
+
+    return dataloaders
