@@ -1,0 +1,536 @@
+import numpy as np
+import os
+import torch
+import visdom
+import shutil
+import sys
+from pathlib import Path
+import matplotlib.pyplot as plt
+from typing import Dict, List, Any, Callable, Optional
+import torch.nn as nn
+import torch.functional as F
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from sklearn.metrics import precision_score, recall_score, f1_score
+
+
+class Experiment:
+    def __init__(self, name: str, root: str, logger=None):
+        self.name = name
+        self.root = os.path.join(root, name)
+        self.logger = logger
+        self.epoch = 1
+        self.best_val_loss = sys.float_info.max
+        self.best_val_loss_epoch = 1
+        self.weights_dir = os.path.join(self.root, 'weights')
+        self.history_dir = os.path.join(self.root, 'history')
+        self.results_dir = os.path.join(self.root, 'results')
+        self.latest_weights = os.path.join(self.weights_dir, 'latest_weights.pth')
+        self.latest_optimizer = os.path.join(self.weights_dir, 'latest_optim.pth')
+        self.best_weights_path = self.latest_weights
+        self.best_optimizer_path = self.latest_optimizer
+        self.train_history_fpath = os.path.join(self.history_dir, 'train.csv')
+        self.val_history_fpath = os.path.join(self.history_dir, 'val.csv')
+        self.test_history_fpath = os.path.join(self.history_dir, 'test.csv')
+        self.metrics = ['loss', 'accuracy', 'precision', 'recall', 'f1']
+        self.history = {split: {metric: [] for metric in self.metrics} for split in ['train', 'val', 'test']}
+        self.viz = visdom.Visdom()
+        self.visdom_plots = self.init_visdom_plots()
+
+    def log(self, msg: str):
+        if self.logger:
+            self.logger.info(msg)
+
+    def init(self):
+        self.log("Creating new experiment")
+        self.init_dirs()
+        self.init_history_files()
+
+    def resume(self, model: torch.nn.Module, optim: torch.optim.Optimizer, weights_fpath: str = None, optim_path: str = None):
+        self.log("Resuming existing experiment")
+        if weights_fpath is None:
+            weights_fpath = self.latest_weights
+        if optim_path is None:
+            optim_path = self.latest_optimizer
+
+        model, state = self.load_weights(model, weights_fpath)
+        optim = self.load_optimizer(optim, optim_path)
+
+        self.best_val_loss = state['best_val_loss']
+        self.best_val_loss_epoch = state['best_val_loss_epoch']
+        self.epoch = state['last_epoch'] + 1
+        self.load_history_from_file('train')
+        self.load_history_from_file('val')
+
+        return model, optim
+
+    def init_dirs(self):
+        os.makedirs(self.weights_dir, exist_ok=True)
+        os.makedirs(self.history_dir, exist_ok=True)
+        os.makedirs(self.results_dir, exist_ok=True)
+
+    def init_history_files(self):
+        header = ','.join(['epoch'] + self.metrics) + '\n'
+        for split in ['train', 'val', 'test']:
+            fpath = getattr(self, f'{split}_history_fpath')
+            with open(fpath, 'w') as f:
+                f.write(header)
+
+    def init_visdom_plots(self):
+        plots = {}
+        for metric in self.metrics:
+            plots[metric] = self.init_viz_train_plot(metric)
+        plots['summary'] = self.init_viz_txt_plot('summary')
+        return plots
+
+    def init_viz_train_plot(self, title: str):
+        return self.viz.line(
+            X=np.array([1]),
+            Y=np.array([[1, 1]]),
+            opts=dict(
+                xlabel='epoch',
+                ylabel=title,
+                title=f'{self.name} {title}',
+                legend=['Train', 'Validation']
+            ),
+            env=self.name
+        )
+
+    def init_viz_txt_plot(self, title: str):
+        return self.viz.text(
+            f"Initializing.. {title}",
+            env=self.name
+        )
+
+    def update_viz_plots(self):
+        for metric in self.metrics:
+            self.update_viz_metric_plot(metric)
+        self.update_viz_summary_plot()
+
+    def update_viz_metric_plot(self, metric: str):
+        data = np.stack([self.history['train'][metric], self.history['val'][metric]], 1)
+        window = self.visdom_plots[metric]
+        self.viz.line(
+            X=np.arange(1, self.epoch + 1).repeat(2).reshape(-1, 2),
+            Y=data,
+            win=window,
+            env=self.name,
+            opts=dict(
+                xlabel='epoch',
+                ylabel=metric,
+                title=f'{self.name} {metric}',
+                legend=['Train', 'Validation']
+            ),
+        )
+
+    def update_viz_summary_plot(self):
+        txt = f"Epoch: {self.epoch}\n"
+        for split in ['train', 'val']:
+            txt += f"{split.capitalize()}:\n"
+            for metric in self.metrics:
+                value = self.history[split][metric][-1]
+                txt += f"  {metric}: {value:.3f}\n"
+        self.viz.text(txt, win=self.visdom_plots['summary'], env=self.name)
+
+    def load_history_from_file(self, split: str):
+        fpath = getattr(self, f'{split}_history_fpath')
+        data = np.loadtxt(fpath, delimiter=',', skiprows=1)
+        for i, metric in enumerate(self.metrics):
+            self.history[split][metric] = data[:, i+1].tolist()
+
+    def save_history(self, split: str, **kwargs):
+        for metric, value in kwargs.items():
+            self.history[split][metric].append(value)
+        
+        fpath = getattr(self, f'{split}_history_fpath')
+        with open(fpath, 'a') as f:
+            values = [str(kwargs.get(metric, '')) for metric in self.metrics]
+            f.write(f"{self.epoch},{','.join(values)}\n")
+
+        if split == 'val' and self.is_best_loss(kwargs['loss']):
+            self.best_val_loss = kwargs['loss']
+            self.best_val_loss_epoch = self.epoch
+
+    def is_best_loss(self, loss: float) -> bool:
+        return loss < self.best_val_loss
+
+    def save_weights(self, model: torch.nn.Module, **kwargs):
+        weights_fname = f"{self.name}-weights-{self.epoch}-" + "-".join([f"{v:.3f}" for v in kwargs.values()]) + ".pth"
+        weights_fpath = os.path.join(self.weights_dir, weights_fname)
+        torch.save({
+            'last_epoch': self.epoch,
+            'best_val_loss': self.best_val_loss,
+            'best_val_loss_epoch': self.best_val_loss_epoch,
+            'experiment': self.name,
+            'state_dict': model.state_dict(),
+            **kwargs
+        }, weights_fpath)
+        shutil.copyfile(weights_fpath, self.latest_weights)
+        if self.is_best_loss(kwargs['val_loss']):
+            self.best_weights_path = weights_fpath
+
+    def load_weights(self, model: torch.nn.Module, fpath: str):
+        self.log(f"loading weights '{fpath}'")
+        state = torch.load(fpath)
+        model.load_state_dict(state['state_dict'])
+        self.log(f"loaded weights from experiment {self.name} (last_epoch {state['last_epoch']})")
+        return model, state
+
+    def save_optimizer(self, optimizer: torch.optim.Optimizer, val_loss: float):
+        optim_fname = f"{self.name}-optim-{self.epoch}.pth"
+        optim_fpath = os.path.join(self.weights_dir, optim_fname)
+        torch.save({
+            'last_epoch': self.epoch,
+            'experiment': self.name,
+            'state_dict': optimizer.state_dict()
+        }, optim_fpath)
+        shutil.copyfile(optim_fpath, self.latest_optimizer)
+        if self.is_best_loss(val_loss):
+            self.best_optimizer_path = optim_fpath
+
+    def load_optimizer(self, optimizer: torch.optim.Optimizer, fpath: str):
+        self.log(f"loading optimizer '{fpath}'")
+        optim = torch.load(fpath)
+        optimizer.load_state_dict(optim['state_dict'])
+        self.log(f"loaded optimizer from session {optim['experiment']}, last_epoch {optim['last_epoch']}")
+        return optimizer
+
+    def plot_history(self):
+        for metric in self.metrics:
+            fig, ax = plt.subplots(figsize=(10, 6))
+            for split in ['train', 'val']:
+                ax.plot(self.history[split][metric], label=split.capitalize())
+            ax.set_xlabel('Epoch')
+            ax.set_ylabel(metric.capitalize())
+            ax.legend()
+            ax.set_title(f'{self.name} - {metric.capitalize()}')
+            plt.savefig(os.path.join(self.history_dir, f'{metric}.png'))
+            plt.close()
+
+        fig, axes = plt.subplots(len(self.metrics), 1, figsize=(12, 6*len(self.metrics)))
+        for i, metric in enumerate(self.metrics):
+            for split in ['train', 'val']:
+                axes[i].plot(self.history[split][metric], label=split.capitalize())
+            axes[i].set_xlabel('Epoch')
+            axes[i].set_ylabel(metric.capitalize())
+            axes[i].legend()
+            axes[i].set_title(f'{metric.capitalize()}')
+        fig.suptitle(f'{self.name} - Training History')
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.history_dir, 'combined_history.png'))
+        plt.close()
+
+
+class Callback:
+    def on_epoch_end(self, epoch: int, logs: Dict[str, float]):
+        pass
+
+class EarlyStopping(Callback):
+    def __init__(self, monitor: str = 'val_loss', min_delta: float = 0, patience: int = 0, verbose: bool = False, mode: str = 'auto'):
+        self.monitor = monitor
+        self.patience = patience
+        self.verbose = verbose
+        self.min_delta = min_delta
+        self.wait = 0
+        self.stopped_epoch = 0
+        self.best = None
+        self.mode = mode
+        self.monitor_op = None
+        self._init_monitor_op()
+
+    def _init_monitor_op(self):
+        if self.mode not in ['auto', 'min', 'max']:
+            print('EarlyStopping mode %s is unknown, fallback to auto mode.' % self.mode)
+            self.mode = 'auto'
+
+        if self.mode == 'min' or (self.mode == 'auto' and 'loss' in self.monitor):
+            self.monitor_op = np.less
+        else:
+            self.monitor_op = np.greater
+
+    def on_epoch_end(self, epoch: int, logs: Dict[str, float]) -> bool:
+        current = logs.get(self.monitor)
+        if current is None:
+            print(f"Early stopping conditioned on metric `{self.monitor}` which is not available. Available metrics are: {','.join(list(logs.keys()))}")
+            return False
+
+        if self.best is None:
+            self.best = current
+            self.wait = 0
+        elif self.monitor_op(current - self.min_delta, self.best):
+            self.best = current
+            self.wait = 0
+        else:
+            self.wait += 1
+            if self.wait >= self.patience:
+                self.stopped_epoch = epoch
+                if self.verbose:
+                    print(f'Epoch {epoch}: early stopping')
+                return True
+        return False
+
+class ModelCheckpoint(Callback):
+    def __init__(self, filepath: str, monitor: str = 'val_loss', verbose: int = 0, save_best_only: bool = False, mode: str = 'auto', save_weights_only: bool = False):
+        self.monitor = monitor
+        self.filepath = filepath
+        self.verbose = verbose
+        self.save_best_only = save_best_only
+        self.save_weights_only = save_weights_only
+        self.mode = mode
+        self.best = None
+        self.monitor_op = None
+        self._init_monitor_op()
+
+    def _init_monitor_op(self):
+        if self.mode not in ['auto', 'min', 'max']:
+            print('ModelCheckpoint mode %s is unknown, fallback to auto mode.' % self.mode)
+            self.mode = 'auto'
+
+        if self.mode == 'min' or (self.mode == 'auto' and 'loss' in self.monitor):
+            self.monitor_op = np.less
+        else:
+            self.monitor_op = np.greater
+
+    def on_epoch_end(self, epoch: int, logs: Dict[str, float], model: torch.nn.Module):
+        current = logs.get(self.monitor)
+        if current is None:
+            print(f"Can't save best model, metric `{self.monitor}` is not available. Available metrics are: {','.join(list(logs.keys()))}")
+            return
+
+        if self.save_best_only:
+            if self.best is None or self.monitor_op(current, self.best):
+                if self.verbose > 0:
+                    print(f'\nEpoch {epoch:05d}: {self.monitor} improved from {self.best:.5f} to {current:.5f}, saving model to {self.filepath}')
+                self.best = current
+                if self.save_weights_only:
+                    torch.save(model.state_dict(), self.filepath)
+                else:
+                    torch.save(model, self.filepath)
+        else:
+            if self.verbose > 0:
+                print(f'\nEpoch {epoch:05d}: saving model to {self.filepath}')
+            if self.save_weights_only:
+                torch.save(model.state_dict(), self.filepath)
+            else:
+                torch.save(model, self.filepath)
+
+class ReduceLROnPlateau(Callback):
+    def __init__(self, optimizer: torch.optim.Optimizer, mode: str = 'min', factor: float = 0.1, patience: int = 10, verbose: bool = False, min_lr: float = 0, eps: float = 1e-8):
+        self.optimizer = optimizer
+        self.mode = mode
+        self.factor = factor
+        self.patience = patience
+        self.verbose = verbose
+        self.min_lr = min_lr
+        self.eps = eps
+        self.cooldown_counter = 0
+        self.wait = 0
+        self.best = None
+        self.mode_worse = None
+        self.is_better = None
+        self._init_is_better(mode)
+
+    def _init_is_better(self, mode):
+        if mode not in {'min', 'max'}:
+            raise ValueError('mode ' + mode + ' is unknown!')
+
+        if mode == 'min':
+            self.mode_worse = float('inf')
+            self.is_better = lambda a, best: a < best - self.eps
+        if mode == 'max':
+            self.mode_worse = -float('inf')
+            self.is_better = lambda a, best: a > best + self.eps
+
+    def on_epoch_end(self, epoch: int, logs: Dict[str, float]):
+        current = logs.get(self.mode)
+        if current is None:
+            print(f"ReduceLROnPlateau conditioned on metric `{self.mode}` which is not available. Available metrics are: {','.join(list(logs.keys()))}")
+            return
+
+        if self.best is None or self.is_better(current, self.best):
+            self.best = current
+            self.wait = 0
+        else:
+            self.wait += 1
+
+        if self.wait >= self.patience:
+            self._reduce_lr(epoch)
+            self.wait = 0
+
+    def _reduce_lr(self, epoch):
+        for i, param_group in enumerate(self.optimizer.param_groups):
+            old_lr = float(param_group['lr'])
+            new_lr = max(old_lr * self.factor, self.min_lr)
+            if old_lr - new_lr > self.eps:
+                param_group['lr'] = new_lr
+                if self.verbose:
+                    print(f'Epoch {epoch}: reducing learning rate of group {i} to {new_lr:.4e}.')
+
+
+class BaselineCNN(nn.Module):
+    def __init__(self, num_classes, input_channels=3):
+        super(BaselineCNN, self).__init__()
+        self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
+        self.pool = nn.MaxPool2d(2, 2)
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.flatten = nn.Flatten()
+        self.fc1 = nn.Linear(128, 512)
+        self.fc2 = nn.Linear(512, num_classes)
+        self.dropout = nn.Dropout(0.5)
+
+    def forward(self, x):
+        x = self.pool(F.relu(self.conv1(x)))
+        x = self.pool(F.relu(self.conv2(x)))
+        x = self.pool(F.relu(self.conv3(x)))
+        x = self.adaptive_pool(x)
+        x = self.flatten(x)
+        x = F.relu(self.fc1(x))
+        x = self.dropout(x)
+        x = self.fc2(x)
+        return x  
+
+def create_model(num_classes):
+    return BaselineCNN(num_classes)
+
+
+def train_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module, 
+                optimizer: optim.Optimizer, device: torch.device) -> Dict[str, float]:
+    """
+    Train the model for one epoch.
+
+    Args:
+        model (nn.Module): The neural network model to train.
+        dataloader (DataLoader): The DataLoader for the training data.
+        criterion (nn.Module): The loss function.
+        optimizer (optim.Optimizer): The optimizer for updating model parameters.
+        device (torch.device): The device to run the training on (CPU or GPU).
+
+    Returns:
+        Dict[str, float]: A dictionary containing the average loss and various metrics for the epoch.
+    """
+    model.train()
+    running_loss = 0.0
+    predictions: List[np.ndarray] = []
+    targets: List[np.ndarray] = []
+
+    for inputs, labels in dataloader:
+        inputs, labels = inputs.to(device), labels.to(device)
+        
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+
+        running_loss += loss.item() * inputs.size(0)
+        predictions.extend(torch.argmax(outputs, dim=1).cpu().numpy())
+        targets.extend(labels.cpu().numpy())
+
+    epoch_loss = running_loss / len(dataloader.dataset)
+    epoch_accuracy = np.mean(np.array(predictions) == np.array(targets))
+    epoch_precision = precision_score(targets, predictions, average='weighted')
+    epoch_recall = recall_score(targets, predictions, average='weighted')
+    epoch_f1 = f1_score(targets, predictions, average='weighted')
+
+    return {
+        'loss': epoch_loss,
+        'accuracy': epoch_accuracy,
+        'precision': epoch_precision,
+        'recall': epoch_recall,
+        'f1': epoch_f1
+    }
+
+def validate(model: nn.Module, dataloader: DataLoader, criterion: nn.Module, 
+             device: torch.device) -> Dict[str, float]:
+    """
+    Validate the model on the validation set.
+
+    Args:
+        model (nn.Module): The neural network model to validate.
+        dataloader (DataLoader): The DataLoader for the validation data.
+        criterion (nn.Module): The loss function.
+        device (torch.device): The device to run the validation on (CPU or GPU).
+
+    Returns:
+        Dict[str, float]: A dictionary containing the average loss and various metrics for the validation set.
+    """
+    model.eval()
+    running_loss = 0.0
+    predictions: List[np.ndarray] = []
+    targets: List[np.ndarray] = []
+
+    with torch.no_grad():
+        for inputs, labels in dataloader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+
+            running_loss += loss.item() * inputs.size(0)
+            predictions.extend(torch.argmax(outputs, dim=1).cpu().numpy())
+            targets.extend(labels.cpu().numpy())
+
+    epoch_loss = running_loss / len(dataloader.dataset)
+    epoch_accuracy = np.mean(np.array(predictions) == np.array(targets))
+    epoch_precision = precision_score(targets, predictions, average='weighted')
+    epoch_recall = recall_score(targets, predictions, average='weighted')
+    epoch_f1 = f1_score(targets, predictions, average='weighted')
+
+    return {
+        'val_loss': epoch_loss,
+        'val_accuracy': epoch_accuracy,
+        'val_precision': epoch_precision,
+        'val_recall': epoch_recall,
+        'val_f1': epoch_f1
+    }
+
+
+def train_model(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader, 
+                experiment: Any, callbacks: List[Any], num_epochs: int, 
+                device: torch.device) -> nn.Module:
+    """
+    Train the model for a specified number of epochs.
+
+    Args:
+        model (nn.Module): The neural network model to train.
+        train_loader (DataLoader): The DataLoader for the training data.
+        val_loader (DataLoader): The DataLoader for the validation data.
+        experiment (Any): An object to track the experiment (e.g., for logging).
+        callbacks (List[Any]): A list of callback objects for various training events.
+        num_epochs (int): The number of epochs to train for.
+        device (torch.device): The device to run the training on (CPU or GPU).
+
+    Returns:
+        nn.Module: The trained model.
+    """
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+    for epoch in range(1, num_epochs + 1):
+        train_logs = train_epoch(model, train_loader, criterion, optimizer, device)
+        val_logs = validate(model, val_loader, criterion, device)
+
+        logs = {**train_logs, **val_logs}
+        experiment.save_history('train', **train_logs)
+        experiment.save_history('val', **val_logs)
+        experiment.update_viz_plots()
+
+        stop_training = False
+        for callback in callbacks:
+            if isinstance(callback, ModelCheckpoint):
+                callback.on_epoch_end(epoch, logs, model)
+            elif isinstance(callback, ReduceLROnPlateau):
+                callback.on_epoch_end(epoch, logs, optimizer)
+            else:
+                stop_training = callback.on_epoch_end(epoch, logs)
+            
+            if stop_training:
+                print(f"Early stopping at epoch {epoch}")
+                break
+
+        if stop_training:
+            break
+
+    return model
