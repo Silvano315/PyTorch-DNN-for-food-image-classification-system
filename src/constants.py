@@ -5,4 +5,4 @@ RANDOM_SEED = 59
 DATA_PATH = 'dataset/'
 
 # Define Batch size
-BATCH_SIZE = 64
+BATCH_SIZE = 128
