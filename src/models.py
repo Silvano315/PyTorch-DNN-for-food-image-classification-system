@@ -6,7 +6,7 @@ import shutil
 import sys
 from pathlib import Path
 import matplotlib.pyplot as plt
-from typing import Dict, List, Any, Callable, Optional
+from typing import Dict, List, Any, Tuple, Callable, Optional
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
@@ -499,3 +499,32 @@ def train_model(model: nn.Module, train_loader: DataLoader, val_loader: DataLoad
 
     logger.info("Training completed")
     return model
+
+
+def get_predictions(model: torch.nn.Module, dataloader: DataLoader, device: torch.device) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Get predictions from the model for the entire dataset.
+
+    Args:
+        model (torch.nn.Module): The trained model to use for predictions.
+        dataloader (DataLoader): DataLoader containing the dataset to predict on.
+        device (torch.device): The device to run the model on (CPU or GPU).
+
+    Returns:
+        Tuple[np.ndarray, np.ndarray]: A tuple containing two numpy arrays:
+            - The first array contains the true labels.
+            - The second array contains the predicted labels.
+    """
+    model.eval()
+    all_preds: List[int] = []
+    all_labels: List[int] = []
+    
+    with torch.no_grad():
+        for inputs, labels in dataloader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            outputs = model(inputs)
+            _, preds = torch.max(outputs, 1)
+            all_preds.extend(preds.cpu().tolist())
+            all_labels.extend(labels.cpu().tolist())
+    
+    return np.array(all_labels), np.array(all_preds)

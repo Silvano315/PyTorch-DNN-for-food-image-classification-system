@@ -7,6 +7,7 @@ from PIL import Image
 from collections import Counter
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from sklearn.metrics import confusion_matrix
 import torch
 import torchvision
 
@@ -320,3 +321,38 @@ def visualize_augmented_images(dataset: torchvision.datasets.ImageFolder, num_im
 
     plt.tight_layout()
     plt.show()
+
+
+def plot_confusion_matrix(y_true: np.ndarray, y_pred: np.ndarray, classes: List[str]) -> None:
+    """
+    Plot and save a confusion matrix.
+
+    Args:
+        y_true (np.ndarray): Array of true labels.
+        y_pred (np.ndarray): Array of predicted labels.
+        classes (List[str]): List of class names.
+
+    Returns:
+        None: This function saves the plot as a file and doesn't return anything.
+    """
+    cm = confusion_matrix(y_true, y_pred)
+    plt.figure(figsize=(10, 8))
+    plt.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
+    plt.title('Confusion Matrix')
+    plt.colorbar()
+    tick_marks = np.arange(len(classes))
+    plt.xticks(tick_marks, classes, rotation=45)
+    plt.yticks(tick_marks, classes)
+    
+    fmt = 'd'
+    thresh = cm.max() / 2.
+    for i, j in np.ndindex(cm.shape):
+        plt.text(j, i, format(cm[i, j], fmt),
+                 ha="center", va="center",
+                 color="white" if cm[i, j] > thresh else "black")
+    
+    plt.ylabel('True label')
+    plt.xlabel('Predicted label')
+    plt.tight_layout()
+    plt.savefig('images/confusion_matrix.png')
+    plt.close()
