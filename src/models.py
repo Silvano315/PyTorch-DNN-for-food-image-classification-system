@@ -8,7 +8,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from typing import Dict, List, Any, Callable, Optional
 import torch.nn as nn
-import torch.functional as F
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from sklearn.metrics import precision_score, recall_score, f1_score
@@ -34,8 +34,6 @@ class Experiment:
         self.test_history_fpath = os.path.join(self.history_dir, 'test.csv')
         self.metrics = ['loss', 'accuracy', 'precision', 'recall', 'f1']
         self.history = {split: {metric: [] for metric in self.metrics} for split in ['train', 'val', 'test']}
-        self.viz = visdom.Visdom()
-        self.visdom_plots = self.init_visdom_plots()
 
     def log(self, msg: str):
         if self.logger:
@@ -75,62 +73,6 @@ class Experiment:
             fpath = getattr(self, f'{split}_history_fpath')
             with open(fpath, 'w') as f:
                 f.write(header)
-
-    def init_visdom_plots(self):
-        plots = {}
-        for metric in self.metrics:
-            plots[metric] = self.init_viz_train_plot(metric)
-        plots['summary'] = self.init_viz_txt_plot('summary')
-        return plots
-
-    def init_viz_train_plot(self, title: str):
-        return self.viz.line(
-            X=np.array([1]),
-            Y=np.array([[1, 1]]),
-            opts=dict(
-                xlabel='epoch',
-                ylabel=title,
-                title=f'{self.name} {title}',
-                legend=['Train', 'Validation']
-            ),
-            env=self.name
-        )
-
-    def init_viz_txt_plot(self, title: str):
-        return self.viz.text(
-            f"Initializing.. {title}",
-            env=self.name
-        )
-
-    def update_viz_plots(self):
-        for metric in self.metrics:
-            self.update_viz_metric_plot(metric)
-        self.update_viz_summary_plot()
-
-    def update_viz_metric_plot(self, metric: str):
-        data = np.stack([self.history['train'][metric], self.history['val'][metric]], 1)
-        window = self.visdom_plots[metric]
-        self.viz.line(
-            X=np.arange(1, self.epoch + 1).repeat(2).reshape(-1, 2),
-            Y=data,
-            win=window,
-            env=self.name,
-            opts=dict(
-                xlabel='epoch',
-                ylabel=metric,
-                title=f'{self.name} {metric}',
-                legend=['Train', 'Validation']
-            ),
-        )
-
-    def update_viz_summary_plot(self):
-        txt = f"Epoch: {self.epoch}\n"
-        for split in ['train', 'val']:
-            txt += f"{split.capitalize()}:\n"
-            for metric in self.metrics:
-                value = self.history[split][metric][-1]
-                txt += f"  {metric}: {value:.3f}\n"
-        self.viz.text(txt, win=self.visdom_plots['summary'], env=self.name)
 
     def load_history_from_file(self, split: str):
         fpath = getattr(self, f'{split}_history_fpath')
@@ -219,6 +161,9 @@ class Experiment:
         plt.tight_layout()
         plt.savefig(os.path.join(self.history_dir, 'combined_history.png'))
         plt.close()
+
+    def update_plots(self):
+        self.plot_history()
 
 
 class Callback:
