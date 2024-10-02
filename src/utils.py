@@ -61,7 +61,17 @@ def get_dataset_paths(dataset_dir: str) -> Dict[str, Tuple[List[str], List[str]]
     return dataset_paths
 
 
-def get_logger(ch_log_level=logging.INFO, fh_log_level=logging.INFO):
+def get_logger(ch_log_level: int = logging.INFO, fh_log_level: int = logging.INFO) -> logging.Logger:
+    """
+    Create and configure a logger with console and file handlers.
+
+    Args:
+        ch_log_level (int): Logging level for the console handler. Default is logging.INFO.
+        fh_log_level (int): Logging level for the file handler. Default is logging.INFO.
+
+    Returns:
+        logging.Logger: Configured logger object.
+    """
     logger = logging.getLogger('training')
     logger.setLevel(logging.DEBUG)
     
