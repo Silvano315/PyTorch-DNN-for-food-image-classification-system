@@ -1,7 +1,7 @@
 import numpy as np
 import os
 import torch
-import visdom
+import logging
 import shutil
 import sys
 from pathlib import Path
@@ -424,17 +424,17 @@ def validate(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,
     epoch_f1 = f1_score(targets, predictions, average='weighted')
 
     return {
-        'val_loss': epoch_loss,
-        'val_accuracy': epoch_accuracy,
-        'val_precision': epoch_precision,
-        'val_recall': epoch_recall,
-        'val_f1': epoch_f1
+        'loss': epoch_loss,
+        'accuracy': epoch_accuracy,
+        'precision': epoch_precision,
+        'recall': epoch_recall,
+        'f1': epoch_f1
     }
 
 
-def train_model(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader, 
-                experiment: Any, callbacks: List[Any], num_epochs: int, 
-                device: torch.device) -> nn.Module:
+def train_model(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader,
+                experiment: Any, callbacks: List[Any], num_epochs: int,
+                device: torch.device, logger: logging.Logger) -> nn.Module:
     """
     Train the model for a specified number of epochs.
 
@@ -446,6 +446,7 @@ def train_model(model: nn.Module, train_loader: DataLoader, val_loader: DataLoad
         callbacks (List[Any]): A list of callback objects for various training events.
         num_epochs (int): The number of epochs to train for.
         device (torch.device): The device to run the training on (CPU or GPU).
+        logger (logging.Logger): Logger object for detailed logging.
 
     Returns:
         nn.Module: The trained model.
@@ -453,29 +454,48 @@ def train_model(model: nn.Module, train_loader: DataLoader, val_loader: DataLoad
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 
+    logger.info(f"Starting training for {num_epochs} epochs")
+    logger.info(f"Model: {model.__class__.__name__}")
+    logger.info(f"Optimizer: {optimizer.__class__.__name__}")
+    logger.info(f"Criterion: {criterion.__class__.__name__}")
+    logger.info(f"Device: {device}")
+
     for epoch in range(1, num_epochs + 1):
+        logger.info(f"Epoch {epoch}/{num_epochs}")
+
         train_logs = train_epoch(model, train_loader, criterion, optimizer, device)
         val_logs = validate(model, val_loader, criterion, device)
 
-        logs = {**train_logs, **val_logs}
+        val_logs_prefixed = {'val_' + k: v for k, v in val_logs.items()}
+        logs = {**train_logs, **val_logs_prefixed}
+        
+        log_message = f"Epoch {epoch} - "
+        log_message += " | ".join([f"{k}: {v:.4f}" for k, v in logs.items()])
+        logger.info(log_message)
+
         experiment.save_history('train', **train_logs)
-        experiment.save_history('val', **val_logs)
-        experiment.update_viz_plots()
+        experiment.save_history('val', **val_logs_prefixed)
+        experiment.update_plots()
 
         stop_training = False
         for callback in callbacks:
             if isinstance(callback, ModelCheckpoint):
                 callback.on_epoch_end(epoch, logs, model)
+                logger.info(f"ModelCheckpoint: Saved model at epoch {epoch}")
             elif isinstance(callback, ReduceLROnPlateau):
+                old_lr = optimizer.param_groups[0]['lr']
                 callback.on_epoch_end(epoch, logs, optimizer)
+                new_lr = optimizer.param_groups[0]['lr']
+                if old_lr != new_lr:
+                    logger.info(f"ReduceLROnPlateau: Learning rate changed from {old_lr} to {new_lr}")
             else:
                 stop_training = callback.on_epoch_end(epoch, logs)
-            
-            if stop_training:
-                print(f"Early stopping at epoch {epoch}")
-                break
+                if stop_training:
+                    logger.info(f"Early stopping triggered at epoch {epoch}")
+                    break
 
         if stop_training:
             break
 
+    logger.info("Training completed")
     return model
