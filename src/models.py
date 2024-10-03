@@ -360,7 +360,7 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,
     predictions: List[np.ndarray] = []
     targets: List[np.ndarray] = []
 
-    for inputs, labels in dataloader:
+    for i, (inputs, labels) in enumerate(dataloader):
         inputs, labels = inputs.to(device), labels.to(device)
         
         optimizer.zero_grad()
@@ -372,6 +372,8 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,
         running_loss += loss.item() * inputs.size(0)
         predictions.extend(torch.argmax(outputs, dim=1).cpu().numpy())
         targets.extend(labels.cpu().numpy())
+
+        print(f"Running loss for batch size {i}: {running_loss}")
 
     epoch_loss = running_loss / len(dataloader.dataset)
     epoch_accuracy = np.mean(np.array(predictions) == np.array(targets))
@@ -407,7 +409,7 @@ def validate(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,
     targets: List[np.ndarray] = []
 
     with torch.no_grad():
-        for inputs, labels in dataloader:
+        for i, (inputs, labels) in enumerate(dataloader):
             inputs, labels = inputs.to(device), labels.to(device)
             
             outputs = model(inputs)
@@ -416,6 +418,8 @@ def validate(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,
             running_loss += loss.item() * inputs.size(0)
             predictions.extend(torch.argmax(outputs, dim=1).cpu().numpy())
             targets.extend(labels.cpu().numpy())
+
+            print(f"Running loss for batch size {i}: {running_loss}")
 
     epoch_loss = running_loss / len(dataloader.dataset)
     epoch_accuracy = np.mean(np.array(predictions) == np.array(targets))
