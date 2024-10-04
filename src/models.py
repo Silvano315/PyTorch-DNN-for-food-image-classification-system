@@ -83,16 +83,18 @@ class Experiment:
 
     def save_history(self, split: str, **kwargs):
         for metric, value in kwargs.items():
-            self.history[split][metric].append(value)
-        
+            metric_name = metric[4:] if metric.startswith('val_') else metric
+            if metric_name not in self.history[split]:
+                self.history[split][metric_name] = []
+            self.history[split][metric_name].append(value)
         fpath = getattr(self, f'{split}_history_fpath')
         with open(fpath, 'a') as f:
-            values = [str(kwargs.get(metric, '')) for metric in self.metrics]
+            values = [str(kwargs.get(metric, kwargs.get(f'val_{metric}', ''))) for metric in self.metrics]
             f.write(f"{self.epoch},{','.join(values)}\n")
-
-        if split == 'val' and self.is_best_loss(kwargs['loss']):
-            self.best_val_loss = kwargs['loss']
-            self.best_val_loss_epoch = self.epoch
+        if split == 'val' and 'loss' in kwargs:
+            if self.is_best_loss(kwargs['loss']):
+                self.best_val_loss = kwargs['loss']
+                self.best_val_loss_epoch = self.epoch
 
     def is_best_loss(self, loss: float) -> bool:
         return loss < self.best_val_loss
