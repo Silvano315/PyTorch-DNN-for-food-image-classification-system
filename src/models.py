@@ -11,6 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from torchvision import models
 from sklearn.metrics import precision_score, recall_score, f1_score
 
 
@@ -259,6 +260,7 @@ class ModelCheckpoint(Callback):
             else:
                 torch.save(model, self.filepath)
 
+
 class ReduceLROnPlateau(Callback):
     def __init__(self, optimizer: torch.optim.Optimizer, mode: str = 'min', factor: float = 0.1, patience: int = 10, verbose: bool = False, min_lr: float = 0, eps: float = 1e-8):
         self.optimizer = optimizer
@@ -335,9 +337,72 @@ class BaselineCNN(nn.Module):
         x = self.dropout(x)
         x = self.fc2(x)
         return x  
+    
 
-def create_model(num_classes):
-    return BaselineCNN(num_classes)
+class EfficientNetTransfer(nn.Module):
+    def __init__(self, num_classes: int, efficientnet_version: str = 'b0', pretrained: bool = True):
+        super(EfficientNetTransfer, self).__init__()
+        
+        if efficientnet_version == 'b0':
+            efficientnet = models.efficientnet_b0(pretrained=pretrained)
+        elif efficientnet_version == 'b1':
+            efficientnet = models.efficientnet_b1(pretrained=pretrained)
+        
+        self.features = nn.Sequential(*list(efficientnet.children())[:-2])
+        self.pooling = nn.AdaptiveAvgPool2d((1, 1))        
+        num_ftrs = efficientnet.classifier[1].in_features
+        self.fc = nn.Sequential(
+            nn.Dropout(p=0.2, inplace=True),
+            nn.Linear(num_ftrs, num_classes)
+        )
+    
+    def forward(self, x):
+        x = self.features(x)  
+        x = self.pooling(x)  
+        x = torch.flatten(x, 1) 
+        x = self.fc(x)    
+        return x
+    
+    
+def freeze_layers(model: nn.Module, num_layers: int = -1):
+    """
+    Freeze layers of the model for transfer learning.
+
+    Args:
+        model (nn.Module): The model to freeze layers in.
+        num_layers (int): Number of layers to freeze from the start. -1 means freeze all except the last layer.
+    """
+    if isinstance(model, EfficientNetTransfer):
+        if num_layers == -1:
+            for param in model.features.parameters():
+                param.requires_grad = False
+        else:
+            for i, (name, param) in enumerate(model.features.named_parameters()):
+                if i < num_layers:
+                    param.requires_grad = False
+                else:
+                    param.requires_grad = True
+    else:
+        raise NotImplementedError("Freezing layers is only implemented for EfficientNetTransfer")
+
+def create_model(num_classes: int, model_type: str = 'baseline', **kwargs) -> nn.Module:
+    """
+    Create a model for transfer learning.
+
+    Args:
+        num_classes (int): Number of classes in the dataset.
+        model_type (str): Type of model to create ('efficientnet' or 'baseline').
+        **kwargs: Additional arguments for the model.
+
+    Returns:
+        nn.Module: The created model.
+    """
+    if model_type == 'efficientnet':
+        return EfficientNetTransfer(num_classes, **kwargs)
+    elif model_type == 'baseline':
+        return BaselineCNN(num_classes, **kwargs)
+    else:
+        raise ValueError(f"Unknown model type: {model_type}")
 
 
 def train_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module, 
@@ -361,6 +426,8 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,
     targets: List[np.ndarray] = []
 
     for i, (inputs, labels) in enumerate(dataloader):
+        print(device)
+        print(torch.cuda.is_available())
         inputs, labels = inputs.to(device), labels.to(device)
         
         optimizer.zero_grad()
