@@ -558,7 +558,7 @@ def train_model(model: nn.Module, train_loader: DataLoader, val_loader: DataLoad
                 logger.info(f"ModelCheckpoint: Saved model at epoch {epoch}")
             elif isinstance(callback, ReduceLROnPlateau):
                 old_lr = optimizer.param_groups[0]['lr']
-                callback.on_epoch_end(epoch, logs, optimizer)
+                callback.on_epoch_end(epoch, logs)
                 new_lr = optimizer.param_groups[0]['lr']
                 if old_lr != new_lr:
                     logger.info(f"ReduceLROnPlateau: Learning rate changed from {old_lr} to {new_lr}")
