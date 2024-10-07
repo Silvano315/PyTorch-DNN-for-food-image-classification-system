@@ -356,3 +356,19 @@ def plot_confusion_matrix(y_true: np.ndarray, y_pred: np.ndarray, classes: List[
     plt.tight_layout()
     plt.savefig('images/confusion_matrix.png')
     plt.close()
+
+
+def plot_learning_rate(self, lr_history: List[float]):
+        """
+        Plot the learning rate over epochs.
+
+        Args:
+            lr_history (List[float]): List of learning rates for each epoch.
+        """
+        plt.figure(figsize=(10, 6))
+        plt.plot(range(1, len(lr_history) + 1), lr_history)
+        plt.xlabel('Epoch')
+        plt.ylabel('Learning Rate')
+        plt.title(f'{self.name} - Learning Rate Schedule')
+        plt.savefig(os.path.join(self.history_dir, 'learning_rate.png'))
+        plt.close()
