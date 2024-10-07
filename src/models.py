@@ -217,38 +217,46 @@ class EarlyStopping(Callback):
                 return True
         return False
 
+import numpy as np
+import torch
+from typing import Dict
+
 class ModelCheckpoint(Callback):
-    def __init__(self, filepath: str, monitor: str = 'val_loss', verbose: int = 0, save_best_only: bool = False, mode: str = 'auto', save_weights_only: bool = False):
-        self.monitor = monitor
+    def __init__(self, filepath: str, monitor: str = 'val_loss', verbose: int = 0, 
+                 save_best_only: bool = False, mode: str = 'auto', save_weights_only: bool = False):
         self.filepath = filepath
+        self.monitor = monitor
         self.verbose = verbose
         self.save_best_only = save_best_only
         self.save_weights_only = save_weights_only
         self.mode = mode
-        self.best = None
         self.monitor_op = None
         self._init_monitor_op()
 
     def _init_monitor_op(self):
         if self.mode not in ['auto', 'min', 'max']:
-            print('ModelCheckpoint mode %s is unknown, fallback to auto mode.' % self.mode)
+            print(f'ModelCheckpoint mode {self.mode} is unknown, fallback to auto mode.')
             self.mode = 'auto'
 
         if self.mode == 'min' or (self.mode == 'auto' and 'loss' in self.monitor):
             self.monitor_op = np.less
+            self.best = float('inf')
         else:
             self.monitor_op = np.greater
+            self.best = -float('inf')
 
     def on_epoch_end(self, epoch: int, logs: Dict[str, float], model: torch.nn.Module):
         current = logs.get(self.monitor)
         if current is None:
-            print(f"Can't save best model, metric `{self.monitor}` is not available. Available metrics are: {','.join(list(logs.keys()))}")
+            print(f"Can't save best model, metric `{self.monitor}` is not available. "
+                  f"Available metrics are: {','.join(list(logs.keys()))}")
             return
 
         if self.save_best_only:
-            if self.best is None or self.monitor_op(current, self.best):
+            if self.monitor_op(current, self.best):
                 if self.verbose > 0:
-                    print(f'\nEpoch {epoch:05d}: {self.monitor} improved from {self.best:.5f} to {current:.5f}, saving model to {self.filepath}')
+                    print(f'\nEpoch {epoch:05d}: {self.monitor} improved from {self.best:.5f} to {current:.5f}, '
+                          f'saving model to {self.filepath}')
                 self.best = current
                 if self.save_weights_only:
                     torch.save(model.state_dict(), self.filepath)
@@ -261,7 +269,6 @@ class ModelCheckpoint(Callback):
                 torch.save(model.state_dict(), self.filepath)
             else:
                 torch.save(model, self.filepath)
-
 
 class ReduceLROnPlateau(Callback):
     def __init__(self, optimizer: torch.optim.Optimizer, mode: str = 'min', factor: float = 0.1, patience: int = 10, verbose: bool = False, min_lr: float = 0, eps: float = 1e-8):
@@ -428,8 +435,6 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,
     targets: List[np.ndarray] = []
 
     for i, (inputs, labels) in enumerate(dataloader):
-        print(device)
-        print(torch.cuda.is_available())
         inputs, labels = inputs.to(device), labels.to(device)
         
         optimizer.zero_grad()
@@ -441,8 +446,6 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,
         running_loss += loss.item() * inputs.size(0)
         predictions.extend(torch.argmax(outputs, dim=1).cpu().numpy())
         targets.extend(labels.cpu().numpy())
-
-        print(f"Running loss for batch size {i}: {running_loss}")
 
     epoch_loss = running_loss / len(dataloader.dataset)
     epoch_accuracy = np.mean(np.array(predictions) == np.array(targets))
@@ -487,8 +490,6 @@ def validate(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,
             running_loss += loss.item() * inputs.size(0)
             predictions.extend(torch.argmax(outputs, dim=1).cpu().numpy())
             targets.extend(labels.cpu().numpy())
-
-            print(f"Running loss for batch size {i}: {running_loss}")
 
     epoch_loss = running_loss / len(dataloader.dataset)
     epoch_accuracy = np.mean(np.array(predictions) == np.array(targets))
