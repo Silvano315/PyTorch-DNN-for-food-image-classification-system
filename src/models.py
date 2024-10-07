@@ -4,6 +4,7 @@ import torch
 import logging
 import shutil
 import sys
+import json
 from pathlib import Path
 import matplotlib.pyplot as plt
 from typing import Dict, List, Any, Tuple, Callable, Optional
@@ -16,6 +17,10 @@ from sklearn.metrics import precision_score, recall_score, f1_score
 
 
 class Experiment:
+    """
+    A class to manage machine learning experiments, including logging, 
+    saving/loading weights, and visualizing training history.
+    """
     def __init__(self, name: str, root: str, logger=None):
         self.name = name
         self.root = os.path.join(root, name)
@@ -102,43 +107,67 @@ class Experiment:
     def save_weights(self, model: torch.nn.Module, **kwargs):
         weights_fname = f"{self.name}-weights-{self.epoch}-" + "-".join([f"{v:.3f}" for v in kwargs.values()]) + ".pth"
         weights_fpath = os.path.join(self.weights_dir, weights_fname)
-        torch.save({
-            'last_epoch': self.epoch,
-            'best_val_loss': self.best_val_loss,
-            'best_val_loss_epoch': self.best_val_loss_epoch,
-            'experiment': self.name,
-            'state_dict': model.state_dict(),
-            **kwargs
-        }, weights_fpath)
-        shutil.copyfile(weights_fpath, self.latest_weights)
-        if self.is_best_loss(kwargs['val_loss']):
-            self.best_weights_path = weights_fpath
+        try:
+            torch.save({
+                'last_epoch': self.epoch,
+                'best_val_loss': self.best_val_loss,
+                'best_val_loss_epoch': self.best_val_loss_epoch,
+                'experiment': self.name,
+                'state_dict': model.state_dict(),
+                **kwargs
+            }, weights_fpath)
+            shutil.copyfile(weights_fpath, self.latest_weights)
+            if self.is_best_loss(kwargs['val_loss']):
+                self.best_weights_path = weights_fpath
+            self.log(f"Successfully saved weights to {weights_fpath}")
+        except Exception as e:
+            self.log(f"Error saving weights: {str(e)}")
+            raise
 
     def load_weights(self, model: torch.nn.Module, fpath: str):
-        self.log(f"loading weights '{fpath}'")
-        state = torch.load(fpath)
-        model.load_state_dict(state['state_dict'])
-        self.log(f"loaded weights from experiment {self.name} (last_epoch {state['last_epoch']})")
-        return model, state
+        self.log(f"Loading weights from '{fpath}'")
+        try:
+            state = torch.load(fpath)
+            model.load_state_dict(state['state_dict'])
+            self.log(f"Loaded weights from experiment {self.name} (last_epoch {state['last_epoch']})")
+            return model, state
+        except FileNotFoundError:
+            self.log(f"Error: Weights file not found at {fpath}")
+            raise
+        except RuntimeError as e:
+            self.log(f"Error loading state dict: {str(e)}")
+            raise
 
     def save_optimizer(self, optimizer: torch.optim.Optimizer, val_loss: float):
         optim_fname = f"{self.name}-optim-{self.epoch}.pth"
         optim_fpath = os.path.join(self.weights_dir, optim_fname)
-        torch.save({
-            'last_epoch': self.epoch,
-            'experiment': self.name,
-            'state_dict': optimizer.state_dict()
-        }, optim_fpath)
-        shutil.copyfile(optim_fpath, self.latest_optimizer)
-        if self.is_best_loss(val_loss):
-            self.best_optimizer_path = optim_fpath
+        try:
+            torch.save({
+                'last_epoch': self.epoch,
+                'experiment': self.name,
+                'state_dict': optimizer.state_dict()
+            }, optim_fpath)
+            shutil.copyfile(optim_fpath, self.latest_optimizer)
+            if self.is_best_loss(val_loss):
+                self.best_optimizer_path = optim_fpath
+            self.log(f"Successfully saved optimizer to {optim_fpath}")
+        except Exception as e:
+            self.log(f"Error saving optimizer: {str(e)}")
+            raise
 
     def load_optimizer(self, optimizer: torch.optim.Optimizer, fpath: str):
-        self.log(f"loading optimizer '{fpath}'")
-        optim = torch.load(fpath)
-        optimizer.load_state_dict(optim['state_dict'])
-        self.log(f"loaded optimizer from session {optim['experiment']}, last_epoch {optim['last_epoch']}")
-        return optimizer
+        self.log(f"Loading optimizer from '{fpath}'")
+        try:
+            optim = torch.load(fpath)
+            optimizer.load_state_dict(optim['state_dict'])
+            self.log(f"Successfully loaded optimizer from session {optim['experiment']}, last_epoch {optim['last_epoch']}")
+            return optimizer
+        except FileNotFoundError:
+            self.log(f"Error: Optimizer file not found at {fpath}")
+            raise
+        except Exception as e:
+            self.log(f"Error loading optimizer: {str(e)}")
+            raise
 
     def plot_history(self):
         for metric in self.metrics:
@@ -168,13 +197,91 @@ class Experiment:
     def update_plots(self):
         self.plot_history()
 
+    def calculate_average_metrics(self, split: str, last_n_epochs: int = 5) -> Dict[str, float]:
+        """
+        Calculate average metrics for the last n epochs.
+
+        Args:
+            split (str): The data split to calculate metrics for ('train', 'val', or 'test').
+            last_n_epochs (int): Number of last epochs to consider for averaging.
+
+        Returns:
+            Dict[str, float]: A dictionary of averaged metrics.
+        """
+        avg_metrics = {}
+        for metric in self.metrics:
+            values = self.history[split][metric][-last_n_epochs:]
+            avg_metrics[metric] = sum(values) / len(values)
+        return avg_metrics
+
+    def export_results_to_json(self, filepath: str):
+        """
+        Export experiment results to a JSON file.
+
+        Args:
+            filepath (str): Path to save the JSON file.
+        """
+        results = {
+            "name": self.name,
+            "best_val_loss": self.best_val_loss,
+            "best_val_loss_epoch": self.best_val_loss_epoch,
+            "final_metrics": {
+                split: self.calculate_average_metrics(split) 
+                for split in ['train', 'val', 'test']
+            },
+            "history": self.history
+        }
+        try:
+            with open(filepath, 'w') as f:
+                json.dump(results, f, indent=4)
+            self.log(f"Successfully exported results to {filepath}")
+        except Exception as e:
+            self.log(f"Error exporting results to JSON: {str(e)}")
+            raise
+
+    def get_best_epoch(self, metric: str = 'val_loss', mode: str = 'min') -> int:
+        """
+        Get the epoch with the best performance for a given metric.
+
+        Args:
+            metric (str): The metric to consider.
+            mode (str): 'min' if lower is better, 'max' if higher is better.
+
+        Returns:
+            int: The epoch with the best performance.
+        """
+        values = self.history['val'][metric]
+        if mode == 'min':
+            best_value = min(values)
+        elif mode == 'max':
+            best_value = max(values)
+        else:
+            raise ValueError("Mode must be 'min' or 'max'")
+        return values.index(best_value) + 1  
+
+    def plot_learning_rate(self, lr_history: List[float]):
+        """
+        Plot the learning rate over epochs.
+
+        Args:
+            lr_history (List[float]): List of learning rates for each epoch.
+        """
+        plt.figure(figsize=(10, 6))
+        plt.plot(range(1, len(lr_history) + 1), lr_history)
+        plt.xlabel('Epoch')
+        plt.ylabel('Learning Rate')
+        plt.title(f'{self.name} - Learning Rate Schedule')
+        plt.savefig(os.path.join(self.history_dir, 'learning_rate.png'))
+        plt.close()
+
 
 class Callback:
     def on_epoch_end(self, epoch: int, logs: Dict[str, float]):
         pass
 
 class EarlyStopping(Callback):
-    def __init__(self, monitor: str = 'val_loss', min_delta: float = 0, patience: int = 0, verbose: bool = False, mode: str = 'auto'):
+    def __init__(self, monitor: str = 'val_loss', min_delta: float = 0, patience: int = 0, 
+                 verbose: bool = False, mode: str = 'auto'):
         self.monitor = monitor
         self.patience = patience
         self.verbose = verbose
@@ -188,9 +295,9 @@ class EarlyStopping(Callback):
 
     def _init_monitor_op(self):
         if self.mode not in ['auto', 'min', 'max']:
-            print('EarlyStopping mode %s is unknown, fallback to auto mode.' % self.mode)
+            print(f'EarlyStopping mode {self.mode} is unknown, fallback to auto mode.')
             self.mode = 'auto'
-
+        
         if self.mode == 'min' or (self.mode == 'auto' and 'loss' in self.monitor):
             self.monitor_op = np.less
         else:
@@ -199,7 +306,8 @@ class EarlyStopping(Callback):
     def on_epoch_end(self, epoch: int, logs: Dict[str, float]) -> bool:
         current = logs.get(self.monitor)
         if current is None:
-            print(f"Early stopping conditioned on metric `{self.monitor}` which is not available. Available metrics are: {','.join(list(logs.keys()))}")
+            print(f"Early stopping conditioned on metric `{self.monitor}` which is not available. "
+                  f"Available metrics are: {','.join(list(logs.keys()))}")
             return False
 
         if self.best is None:
@@ -216,10 +324,7 @@ class EarlyStopping(Callback):
                     print(f'Epoch {epoch}: early stopping')
                 return True
         return False
-
-import numpy as np
-import torch
-from typing import Dict
+    
 
 class ModelCheckpoint(Callback):
     def __init__(self, filepath: str, monitor: str = 'val_loss', verbose: int = 0, 
@@ -271,7 +376,9 @@ class ModelCheckpoint(Callback):
                 torch.save(model, self.filepath)
 
 class ReduceLROnPlateau(Callback):
-    def __init__(self, optimizer: torch.optim.Optimizer, mode: str = 'min', factor: float = 0.1, patience: int = 10, verbose: bool = False, min_lr: float = 0, eps: float = 1e-8):
+    def __init__(self, optimizer: torch.optim.Optimizer, mode: str = 'min', factor: float = 0.1, 
+                 patience: int = 10, verbose: bool = False, min_lr: float = 0, eps: float = 1e-8,
+                 monitor: str = 'val_loss'):
         self.optimizer = optimizer
         self.mode = mode
         self.factor = factor
@@ -279,6 +386,7 @@ class ReduceLROnPlateau(Callback):
         self.verbose = verbose
         self.min_lr = min_lr
         self.eps = eps
+        self.monitor = monitor
         self.cooldown_counter = 0
         self.wait = 0
         self.best = None
@@ -298,9 +406,10 @@ class ReduceLROnPlateau(Callback):
             self.is_better = lambda a, best: a > best + self.eps
 
     def on_epoch_end(self, epoch: int, logs: Dict[str, float]):
-        current = logs.get(self.mode)
+        current = logs.get(self.monitor)
         if current is None:
-            print(f"ReduceLROnPlateau conditioned on metric `{self.mode}` which is not available. Available metrics are: {','.join(list(logs.keys()))}")
+            print(f"ReduceLROnPlateau conditioned on metric `{self.monitor}` which is not available. "
+                  f"Available metrics are: {','.join(list(logs.keys()))}")
             return
 
         if self.best is None or self.is_better(current, self.best):
