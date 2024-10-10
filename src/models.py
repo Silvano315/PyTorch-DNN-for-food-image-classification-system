@@ -436,14 +436,19 @@ class BaselineCNN(nn.Module):
     def __init__(self, num_classes, input_channels=3):
         super(BaselineCNN, self).__init__()
         self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(32)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(64)
         self.conv3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
+        self.bn3 = nn.BatchNorm2d(128)
         self.pool = nn.MaxPool2d(2, 2)
         self.adaptive_pool = nn.AdaptiveAvgPool2d((1, 1))
         self.flatten = nn.Flatten()
         self.fc1 = nn.Linear(128, 512)
-        self.fc2 = nn.Linear(512, num_classes)
-        self.dropout = nn.Dropout(0.5)
+        self.fc2 = nn.Linear(512, 256)
+        self.fc3 = nn.Linear(256, num_classes)
+        self.dropout_1 = nn.Dropout(0.1)
+        self.dropout_2 = nn.Dropout(0.5)
 
     def forward(self, x):
         x = self.pool(F.relu(self.conv1(x)))
@@ -452,8 +457,10 @@ class BaselineCNN(nn.Module):
         x = self.adaptive_pool(x)
         x = self.flatten(x)
         x = F.relu(self.fc1(x))
-        x = self.dropout(x)
-        x = self.fc2(x)
+        x = self.dropout_1(x)
+        x = F.relu(self.fc2(x))
+        x = self.dropout_2(x)
+        x = self.fc3(x)
         return x  
     
 
@@ -558,7 +565,7 @@ def train_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,
 
     epoch_loss = running_loss / len(dataloader.dataset)
     epoch_accuracy = np.mean(np.array(predictions) == np.array(targets))
-    epoch_precision = precision_score(targets, predictions, average='weighted')
+    epoch_precision = precision_score(targets, predictions, average='weighted', zero_division=1)
     epoch_recall = recall_score(targets, predictions, average='weighted')
     epoch_f1 = f1_score(targets, predictions, average='weighted')
 
@@ -602,7 +609,7 @@ def validate(model: nn.Module, dataloader: DataLoader, criterion: nn.Module,
 
     epoch_loss = running_loss / len(dataloader.dataset)
     epoch_accuracy = np.mean(np.array(predictions) == np.array(targets))
-    epoch_precision = precision_score(targets, predictions, average='weighted')
+    epoch_precision = precision_score(targets, predictions, average='weighted', zero_division=1)
     epoch_recall = recall_score(targets, predictions, average='weighted')
     epoch_f1 = f1_score(targets, predictions, average='weighted')
 
